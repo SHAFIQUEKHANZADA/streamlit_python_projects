@@ -3,58 +3,103 @@ import hashlib
 import base64
 import json
 import time
-from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+import os
+import random
+import string
+
+# Check if cryptography is available, otherwise use a simpler encryption
+try:
+    from cryptography.fernet import Fernet
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    CRYPTOGRAPHY_AVAILABLE = True
+except ImportError:
+    CRYPTOGRAPHY_AVAILABLE = False
 
 # Session state initialization
 if 'stored_data' not in st.session_state:
-    st.session_state.stored_data = {} 
+    st.session_state.stored_data = {}  # {"user1_data": {"encrypted_text": "xyz", "passkey": "hashed"}}
 if 'failed_attempts' not in st.session_state:
     st.session_state.failed_attempts = 0
 if 'last_failed_time' not in st.session_state:
     st.session_state.last_failed_time = 0
 if 'locked_out' not in st.session_state:
     st.session_state.locked_out = False
-if 'master_key' not in st.session_state:
+if 'cipher_key' not in st.session_state and CRYPTOGRAPHY_AVAILABLE:
     # Generate a key (this should be stored securely in production)
-    st.session_state.master_key = Fernet.generate_key()
-    st.session_state.cipher = Fernet(st.session_state.master_key)
+    st.session_state.cipher_key = Fernet.generate_key()
+    st.session_state.cipher = Fernet(st.session_state.cipher_key)
 
 # Constants
-LOCKOUT_DURATION = 30  
+LOCKOUT_DURATION = 30  # seconds
 MAX_ATTEMPTS = 3
-MASTER_PASSWORD = "admin123"   
+MASTER_PASSWORD = "admin123"  # In a real app, this would be stored more securely
 
-# Function to generate encryption key from passkey
-def generate_key_from_passkey(passkey, salt=b'salt_'):
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=100000,
-    )
-    key = base64.urlsafe_b64encode(kdf.derive(passkey.encode()))
-    return key
+# Simple Caesar cipher for fallback encryption when cryptography is not available
+def caesar_encrypt(text, shift):
+    result = ""
+    for char in text:
+        if char.isalpha():
+            ascii_offset = ord('a') if char.islower() else ord('A')
+            result += chr((ord(char) - ascii_offset + shift) % 26 + ascii_offset)
+        else:
+            result += char
+    return result
 
-# Function to hash passkey using more secure PBKDF2
+def caesar_decrypt(text, shift):
+    return caesar_encrypt(text, -shift)
+
+# Function to generate a pseudo-random string for the ID
+def generate_id(length=10):
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
+
+# Function to hash passkey
 def hash_passkey(passkey):
     return hashlib.sha256(passkey.encode()).hexdigest()
 
 # Function to encrypt data
 def encrypt_data(text, passkey):
-    key = generate_key_from_passkey(passkey)
-    cipher = Fernet(key)
-    return cipher.encrypt(text.encode()).decode()
+    if CRYPTOGRAPHY_AVAILABLE:
+        key = generate_key_from_passkey(passkey)
+        cipher = Fernet(key)
+        return cipher.encrypt(text.encode()).decode()
+    else:
+        # Fallback to Caesar cipher with a shift derived from the passkey
+        shift = sum(ord(c) for c in passkey) % 26
+        encrypted = caesar_encrypt(text, shift)
+        # Create a unique ID for this encrypted text
+        unique_id = generate_id()
+        return f"{unique_id}:{encrypted}"
 
 # Function to decrypt data
 def decrypt_data(encrypted_text, passkey):
     try:
-        key = generate_key_from_passkey(passkey)
-        cipher = Fernet(key)
-        return cipher.decrypt(encrypted_text.encode()).decode()
+        if CRYPTOGRAPHY_AVAILABLE:
+            key = generate_key_from_passkey(passkey)
+            cipher = Fernet(key)
+            return cipher.decrypt(encrypted_text.encode()).decode()
+        else:
+            # Parse the unique ID and encrypted text
+            if ":" not in encrypted_text:
+                return None
+            unique_id, encrypted = encrypted_text.split(":", 1)
+            shift = sum(ord(c) for c in passkey) % 26
+            return caesar_decrypt(encrypted, shift)
     except Exception:
         return None
+
+# Function to generate key from passkey (only if cryptography is available)
+def generate_key_from_passkey(passkey, salt=b'salt_'):
+    if CRYPTOGRAPHY_AVAILABLE:
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=100000,
+        )
+        key = base64.urlsafe_b64encode(kdf.derive(passkey.encode()))
+        return key
+    return None
 
 # Function to verify passkey
 def verify_passkey(encrypted_text, passkey):
@@ -105,6 +150,10 @@ except Exception:
 # Streamlit UI
 st.title("🔒 Secure Data Encryption System")
 
+# Display cryptography status
+if not CRYPTOGRAPHY_AVAILABLE:
+    st.warning("⚠️ The 'cryptography' package is not installed. Using simplified encryption instead. For better security, install the package with: `pip install cryptography`")
+
 # Navigation
 menu = ["Home", "Store Data", "Retrieve Data", "Login"]
 choice = st.sidebar.selectbox("Navigation", menu)
@@ -119,12 +168,19 @@ if choice == "Home":
     st.write("Use this app to **securely store and retrieve data** using unique passkeys.")
     
     st.info("This system uses:")
-    st.markdown("""
-    - **PBKDF2** for secure key derivation
-    - **Fernet symmetric encryption** for data security
-    - **SHA-256** for passkey hashing
-    - **In-memory storage** with optional JSON persistence
-    """)
+    if CRYPTOGRAPHY_AVAILABLE:
+        st.markdown("""
+        - **PBKDF2** for secure key derivation
+        - **Fernet symmetric encryption** for data security
+        - **SHA-256** for passkey hashing
+        - **In-memory storage** with optional JSON persistence
+        """)
+    else:
+        st.markdown("""
+        - **Caesar cipher** for basic encryption (simplified)
+        - **SHA-256** for passkey hashing
+        - **In-memory storage** with optional JSON persistence
+        """)
     
     st.warning("⚠️ Remember your passkeys! There's no way to recover your data if you forget them.")
 
@@ -240,6 +296,10 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("📊 System Stats")
 st.sidebar.info(f"Stored Items: {len(st.session_state.stored_data)}")
 
+# Add footer
+st.sidebar.markdown("---")
+st.sidebar.caption("Secure Data Encryption System v1.0")
+st.sidebar.caption("Built with Streamlit")
 # Add footer
 st.sidebar.markdown("---")
 st.sidebar.caption("Secure Data Encryption System v1.0")
