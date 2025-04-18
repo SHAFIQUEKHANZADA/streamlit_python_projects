@@ -7,3 +7,6 @@
 [Project 3: Unit Convertor](https://unit-convertor-srk.streamlit.app/)
 
 [Project 4: Password Strength Meter](https://password-strength-meter-srk.streamlit.app/)
+
+[Project 5: Secure Data Encryption System](https://secure-srk.streamlit.app/)
+
